@@ -12,4 +12,4 @@ Start with [`ESPKeyboard/README.md`](ESPKeyboard/README.md), then follow each
 board project's build and pairing instructions.
 
 The ESP8266 USB-device implementation was adapted from
-[omeranha/espusb](https://github.com/omeranha/espusb).
+[cnlohr/espusb](https://github.com/cnlohr/espusb).
