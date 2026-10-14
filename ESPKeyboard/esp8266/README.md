@@ -74,15 +74,6 @@ Each function copies the report into an internal buffer and returns `ESP_ERR_INV
 
 USB packet reception runs in a timing-sensitive GPIO interrupt and assembly routine. Keep the single, direct GPIO ISR registration; the per-pin GPIO ISR service adds latency that can break USB reception.
 
-## Repository contents
-
-- `main/` starts the receiver firmware.
-- `user/` contains the USB component, descriptors, and bit-banged driver.
-- [`../../hardware/`](../../hardware/) contains the USB board schematics and
-  layouts; it is not needed to build firmware.
-- [`../../table/`](../../table/) contains the optional generator for the
-  checked-in USB decoding table.
-
 Only boot-protocol keyboard input is forwarded by the ESP32-S3 firmware. USB
 keyboards that expose only report-protocol interfaces are not supported yet.
 ESP-NOW refreshes the latest complete key state and the receiver releases all

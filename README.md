@@ -9,8 +9,7 @@ bridge:
   protocol shared by both projects.
 
 Start with [`ESPKeyboard/README.md`](ESPKeyboard/README.md), then follow each
-board project's build and pairing instructions. Existing USB hardware files
-remain under [`hardware/`](hardware/).
+board project's build and pairing instructions.
 
 The ESP8266 USB-device implementation was adapted from
 [omeranha/espusb](https://github.com/omeranha/espusb).
