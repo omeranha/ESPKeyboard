@@ -11,7 +11,7 @@
 
 #include "esp8266_rom.h"
 #include "espkeyboard_config.h"
-#include "keyboard_link_wire.h"
+#include "keyboard_link.h"
 #include "usb.h"
 
 // In ROM, declared by no SDK header.
@@ -30,7 +30,7 @@ extern void uart_div_modify( uint8 uart_no, uint32 divisor );
 static volatile os_timer_t status_timer;
 static volatile os_timer_t pump_timer;
 
-static const uint8_t paired_mac[6] = ESPNOW_PEER_MAC;
+static uint8_t paired_mac[6];
 
 static uint8_t last_leds;
 static uint32_t last_irq_count;
@@ -79,22 +79,6 @@ void usb_handle_custom_control( int bmRequestType, int bRequest, int wLength, st
 	(void)bRequest;
 	(void)wLength;
 	(void)ist;
-}
-
-static bool ICACHE_FLASH_ATTR mac_is_usable( const uint8_t mac[6] )
-{
-	int i;
-	bool all_zero = true;
-	bool all_ff = true;
-
-	for( i = 0; i < 6; i++ )
-	{
-		if( mac[i] != 0x00 ) all_zero = false;
-		if( mac[i] != 0xff ) all_ff = false;
-	}
-	// A transmitter's station MAC is always unicast, so reject the unset
-	// default, broadcast, and any multicast address.
-	return !all_zero && !all_ff && ( mac[0] & 1 ) == 0;
 }
 
 static uint32_t ICACHE_FLASH_ATTR ms_since( uint32_t past_us )
@@ -291,9 +275,10 @@ static void ICACHE_FLASH_ATTR start_radio( void )
 		os_printf( "link: ESPNOW_CHANNEL must be 1..13, radio stays off\r\n" );
 		return;
 	}
-	if( !mac_is_usable( paired_mac ) )
+	if( !keyboard_link_parse_mac( ESPNOW_PEER_MAC, paired_mac ) )
 	{
-		os_printf( "link: set ESPNOW_PEER_MAC in src/espkeyboard_config.h to the transmitter's station MAC; radio stays off\r\n" );
+		os_printf( "link: peer MAC \"%s\" is not a usable station address; radio stays off\r\n", ESPNOW_PEER_MAC );
+		os_printf( "link: pass it as build.ps1 -PeerMac aa:bb:cc:dd:ee:ff, or set ESPNOW_PEER_MAC in src/espkeyboard_config.h\r\n" );
 		return;
 	}
 
