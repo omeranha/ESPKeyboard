@@ -1,9 +1,8 @@
 # ESPKeyboard ESP8266 receiver
 
 This ESP8266/ESP8285 firmware receives full keyboard reports over ESP-NOW and
-emulates a low-speed USB HID keyboard on GPIO4 (D-) and GPIO5 (D+). The same
-firmware can still enumerate as a composite HID mouse and keyboard; the wireless
-bridge drives its keyboard endpoint.
+emulates a low-speed USB HID keyboard on GPIO4 (D-) and GPIO5 (D+). It presents
+a single boot-protocol keyboard interface with one interrupt IN endpoint.
 
 The USB bit timing depends on an 80 MHz CPU clock. The supplied
 `sdkconfig.defaults` selects that clock.
@@ -50,7 +49,9 @@ The receiver accepts reports only from its configured peer MAC. ESP-NOW packets
 are not encrypted in this initial version; the MAC filter is pairing, not
 cryptographic authentication. Use these boards in a trusted RF environment.
 Both firmwares disable Wi-Fi power save and pin the radio to the configured
-channel while running.
+channel while running. The receiver resynchronizes the packet sequence when the
+transmitter reboots, and ignores incoming reports entirely until a USB host has
+selected a configuration, so no stale keystrokes are replayed on connection.
 
 ## USB wiring
 
@@ -67,12 +68,34 @@ GPIO4 and GPIO5 are the defaults in [`user/usb_config.h`](user/usb_config.h). Th
 
 The application can submit reports using the APIs in [`user/usb.h`](user/usb.h):
 
-- `usb_send_mouse_report()` accepts four bytes: buttons, X, Y, and wheel.
 - `usb_send_keyboard_report()` accepts eight bytes: modifier, reserved byte, and six key usages.
+- `usb_get_keyboard_leds()` returns the latest LED state the host sent through
+  `SET_REPORT` (bit 0 Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock).
 
-Each function copies the report into an internal buffer and returns `ESP_ERR_INVALID_STATE` while that endpoint is still transmitting. Retry after the corresponding `usb_internal_state.eps[1].send` (mouse) or `usb_internal_state.eps[2].send` (keyboard) becomes zero. Use one producer task per endpoint.
+`usb_send_keyboard_report()` copies the report into an internal buffer and returns `ESP_ERR_INVALID_STATE` while the endpoint is still transmitting. Retry after `usb_internal_state.eps[1].send` becomes zero, and keep a single producer task for the endpoint.
 
-USB packet reception runs in a timing-sensitive GPIO interrupt and assembly routine. Keep the single, direct GPIO ISR registration; the per-pin GPIO ISR service adds latency that can break USB reception.
+## Notes for anyone changing the USB code
+
+USB packet reception runs in a timing-sensitive GPIO interrupt and assembly
+routine. Three constraints come from the RTOS SDK and are easy to break:
+
+- Keep the single, direct GPIO ISR registration and the explicit
+  `_xt_isr_unmask(1 << ETS_GPIO_INUM)` that follows it. `gpio_isr_register()`
+  only attaches the handler; nothing in the SDK enables the GPIO interrupt
+  line, and the per-pin `gpio_install_isr_service()` dispatcher adds latency
+  that breaks USB reception.
+- Anything the interrupt reads must live in RAM. `.rodata` is linked into the
+  flash-mapped instruction space, where each byte or half-word load traps into
+  the SDK's load/store emulation handler, so the descriptors in
+  [`user/usb_config.h`](user/usb_config.h) carry `DRAM_ATTR`. Keep it that way
+  when adding descriptors or strings.
+- The bit timing assumes an 80 MHz CPU clock. `user/usb.c` fails the build if
+  the configuration says otherwise.
+
+The firmware does not implement USB suspend: it keeps driving the bus when the
+host suspends the port and will not meet the suspend current limit. After a host
+sleep/wake cycle the bus is reset and the host reconfigures the device, which
+resets the endpoint data toggles.
 
 Only boot-protocol keyboard input is forwarded by the ESP32-S3 firmware. USB
 keyboards that expose only report-protocol interfaces are not supported yet.
@@ -84,6 +107,9 @@ are missed.
 The ESP8266 bit-bangs USB in a timing-sensitive interrupt while Wi-Fi is active.
 Validate enumeration and sustained typing with the actual boards, USB wiring,
 and radio environment; Wi-Fi activity can affect software-USB timing.
+The receiver starts USB first and waits up to two seconds for the host to select
+its configuration before starting Wi-Fi, reducing radio interference during
+enumeration. If no host configures USB in that interval, ESP-NOW starts anyway.
 
 The firmware build does not use the old `esp82xx` submodule, web server, or
 standalone bootloader projects.

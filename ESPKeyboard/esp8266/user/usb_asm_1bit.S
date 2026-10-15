@@ -102,6 +102,10 @@ gpio_intr:
 	//Load the table.
 	movi       a14, usb_ramtable	//This is actually very slow.
 
+	_l32i.n    a6, a14, USB_INTERNAL_STATE_OFFSET
+	_l32i.n    a5, a6, USB_OFFSET_DEBUG
+	_addi.n    a5, a5, 1
+	_s32i.n    a5, a6, USB_OFFSET_DEBUG
 
 usb_reinstate: //Come back up here if we are expecting more data.
 
@@ -228,6 +232,12 @@ term:
 
 	//Compute the total length of the message
 	sub a10, a8, a15
+
+	//Nothing was decoded at all (stray edge, or we latched on too late).  The
+	//buffer still holds the previous packet, so dispatching here would replay
+	//its PID: a duplicate IN response, or a phantom ACK that inverts the data
+	//toggle and desynchronizes the endpoint.
+	beqz a10, end_gpio_intr
 
 	//Check to make sure we have more than just a token.
 	blti a10, 2, skip_crc_check

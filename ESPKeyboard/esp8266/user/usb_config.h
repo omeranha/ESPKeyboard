@@ -2,7 +2,7 @@
 #define _USB_CONFIG_H
 
 //Defines the number of endpoints for this device. (Always add one for EP0)
-#define ENDPOINTS 3
+#define ENDPOINTS 2
 
 //Defines a pin that is useful for debugging USB on a logic analyzer
 //#define DEBUGPIN 2
@@ -23,8 +23,13 @@
 
 
 #ifdef INSTANCE_DESCRIPTORS
+// Descriptors are read from inside the timing-critical USB interrupt. They must
+// stay in DRAM: rodata is linked into the flash-mapped instruction space, where
+// every byte or half-word load traps into the SDK's load/store emulation
+// handler and costs far more than the USB turnaround budget allows.
+
 //Taken from http://www.usbmadesimple.co.uk/ums_ms_desc_dev.htm
-static const uint8_t device_descriptor[] = {
+static const uint8_t DRAM_ATTR device_descriptor[] = {
 	18, //Length
 	1,  //Type (Device)
 	0x10, 0x01, //Spec
@@ -41,30 +46,28 @@ static const uint8_t device_descriptor[] = {
 	1, //Max number of configurations
 };
 
-static const uint8_t config_descriptor[] = {  //Mostly stolen from a USB mouse I found.
+static const uint8_t DRAM_ATTR config_descriptor[] = {
 	// configuration descriptor, USB spec 9.6.3, page 264-266, Table 9-10
 	9, 					// bLength;
 	2,					// bDescriptorType;
-	0x3b, 0x00,			// wTotalLength  	
+	0x22, 0x00,			// wTotalLength (9 config + 9 interface + 9 HID + 7 endpoint)
 
-	//34, 0x00, //for just the one descriptor
-	
-	0x02,					// bNumInterfaces (Normally 1)
+	0x01,					// bNumInterfaces
 	0x01,					// bConfigurationValue
 	0x00,					// iConfiguration
-	0x80,					// bmAttributes (was 0xa0)
-	0x64,					// bMaxPower (200mA)
+	0x80,					// bmAttributes (bus powered, no remote wakeup)
+	0x64,					// bMaxPower (200mA, the radio needs the headroom)
 
 
-	//Mouse
+	//Keyboard
 	9,					// bLength
 	4,					// bDescriptorType
-	0,			// bInterfaceNumber (unused, would normally be used for HID)
+	0,					// bInterfaceNumber
 	0,					// bAlternateSetting
 	1,					// bNumEndpoints
 	0x03,					// bInterfaceClass (0x03 = HID)
-	0x01,					// bInterfaceSubClass
-	0x02,					// bInterfaceProtocol (Mouse)
+	0x01,					// bInterfaceSubClass (boot interface)
+	0x01,					// bInterfaceProtocol (Keyboard)
 	0,					// iInterface
 
 	9,					// bLength
@@ -73,38 +76,11 @@ static const uint8_t config_descriptor[] = {  //Mostly stolen from a USB mouse I
 	0x00, //country code
 	0x01, //Num descriptors
 	0x22, //DescriptorType[0] (HID)
-	52, 0x00, //Descriptor length XXX This looks wrong!!!
+	63, 0x00, //Descriptor length (sizeof keyboard_hid_desc)
 
 	7, //endpoint descriptor (For endpoint 1)
 	0x05, //Endpoint Descriptor (Must be 5)
 	0x81, //Endpoint Address
-	0x03, //Attributes
-	0x04,	0x00, //Size
-	10, //Interval (Was 0x0a)
-
-
-	//Keyboard  (It is unusual that this would be here)
-	9,					// bLength
-	4,					// bDescriptorType
-	1,			// bInterfaceNumber  = 1 instead of 0 -- well make it second.
-	0,					// bAlternateSetting
-	1,					// bNumEndpoints
-	0x03,					// bInterfaceClass (0x03 = HID)
-	0x01,					// bInterfaceSubClass
-	0x01,					// bInterfaceProtocol (??)
-	0,					// iInterface
-
-	9,					// bLength
-	0x21,					// bDescriptorType (HID)
-	0x10,0x01,		//bcd 1.1
-	0x00, //country code
-	0x01, //Num descriptors
-	0x22, //DescriptorType[0] (HID)
-	63, 0x00, //Descriptor length XXX This looks wrong!!!
-
-	7, //endpoint descriptor (For endpoint 1)
-	0x05, //Endpoint Descriptor (Must be 5)
-	0x82, //Endpoint Address
 	0x03, //Attributes
 	0x08,	0x00, //Size (8 bytes)
 	10, //Interval (Was 0x0a)
@@ -113,38 +89,8 @@ static const uint8_t config_descriptor[] = {  //Mostly stolen from a USB mouse I
 
 
 
-static const uint8_t mouse_hid_desc[52] = {  //From http://eleccelerator.com/tutorial-about-usb-hid-report-descriptors/
-	0x05, 0x01,                    // USAGE_PAGE (Generic Desktop)
-	0x09, 0x02,                    // USAGE (Mouse)
-	0xa1, 0x01,                    // COLLECTION (Application)
-	0x09, 0x01,                    //   USAGE (Pointer)
-	0xa1, 0x00,                    //   COLLECTION (Physical)
-	0x05, 0x09,                    //     USAGE_PAGE (Button)
-	0x19, 0x01,                    //     USAGE_MINIMUM (Button 1)
-	0x29, 0x03,                    //     USAGE_MAXIMUM (Button 3)
-	0x15, 0x00,                    //     LOGICAL_MINIMUM (0)
-	0x25, 0x01,                    //     LOGICAL_MAXIMUM (1)
-	0x95, 0x03,                    //     REPORT_COUNT (3)
-	0x75, 0x01,                    //     REPORT_SIZE (1)
-	0x81, 0x02,                    //     INPUT (Data,Var,Abs)
-	0x95, 0x01,                    //     REPORT_COUNT (1)
-	0x75, 0x05,                    //     REPORT_SIZE (5)
-	0x81, 0x03,                    //     INPUT (Cnst,Var,Abs)
-	0x05, 0x01,                    //     USAGE_PAGE (Generic Desktop)
-	0x09, 0x30,                    //     USAGE (X)
-	0x09, 0x31,                    //     USAGE (Y)
-	0x09, 0x38,                    //     USAGE (Y)
-	0x15, 0x81,                    //     LOGICAL_MINIMUM (-127)
-	0x25, 0x7f,                    //     LOGICAL_MAXIMUM (127)
-	0x75, 0x08,                    //     REPORT_SIZE (8)
-	0x95, 0x03,                    //     REPORT_COUNT (3)
-	0x81, 0x06,                    //     INPUT (Data,Var,Rel)
-	0xc0,                          //   END_COLLECTION
-	0xc0                           // END_COLLECTIONs
-};
-
 //From http://codeandlife.com/2012/06/18/usb-hid-keyboard-with-v-usb/
-static const uint8_t keyboard_hid_desc[63] = {   /* USB report descriptor */
+static const uint8_t DRAM_ATTR keyboard_hid_desc[63] = {   /* USB report descriptor */
     0x05, 0x01,                    // USAGE_PAGE (Generic Desktop)
     0x09, 0x06,                    // USAGE (Keyboard)
     0xa1, 0x01,                    // COLLECTION (Application)
@@ -182,24 +128,25 @@ static const uint8_t keyboard_hid_desc[63] = {   /* USB report descriptor */
 //Ever wonder how you have more than 6 keys down at the same time on a USB keyboard?  It's easy. Enumerate two keyboards!
 
 
-static const uint8_t string0[] = {4, 3, 0x09, 0x04};
-static const uint8_t string1[] = {14, 3, 'C', 0, 'N', 0, 'L', 0, 'o', 0, 'h', 0, 'r', 0};
-static const uint8_t string2[] = {16, 3, 'E', 0, 'S', 0, 'P', 0, 'U', 0, 'S', 0, 'B', 0, '2', 0};
-static const uint8_t string3[] = {8, 3, '0', 0, '0', 0, '0', 0};
+static const uint8_t DRAM_ATTR string0[] = {4, 3, 0x09, 0x04};
+static const uint8_t DRAM_ATTR string1[] = {14, 3, 'C', 0, 'N', 0, 'L', 0, 'o', 0, 'h', 0, 'r', 0};
+static const uint8_t DRAM_ATTR string2[] = {24, 3, 'E', 0, 'S', 0, 'P', 0, 'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0};
+static const uint8_t DRAM_ATTR string3[] = {8, 3, '0', 0, '0', 0, '0', 0};
 
 
 // This table defines which descriptor data is sent for each specific
 // request from the host (in wValue and wIndex).
-const static struct descriptor_list_struct {
+struct descriptor_list_struct {
 	uint16_t	wValue;
 	uint16_t	wIndex;
 	const uint8_t	*addr;
 	uint8_t		length;
-} descriptor_list[] = {
+};
+
+static const struct descriptor_list_struct DRAM_ATTR descriptor_list[] = {
 	{0x0100, 0x0000, device_descriptor, sizeof(device_descriptor)},
 	{0x0200, 0x0000, config_descriptor, sizeof(config_descriptor)},
-	{0x2200, 0x0000, mouse_hid_desc, sizeof(mouse_hid_desc)},
-	{0x2200, 0x0001, keyboard_hid_desc, sizeof(keyboard_hid_desc)},
+	{0x2200, 0x0000, keyboard_hid_desc, sizeof(keyboard_hid_desc)},
 	{0x0300, 0x0000, string0, sizeof(string0)},
 	{0x0301, 0x0409, string1, sizeof(string1)},
 	{0x0302, 0x0409, string2, sizeof(string2)},

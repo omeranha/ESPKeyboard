@@ -6,6 +6,7 @@
 #include "esp_event.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
@@ -21,7 +22,10 @@
 
 #define TX_QUEUE_LENGTH 16
 #define TX_RETRY_LIMIT 3
-#define TX_CALLBACK_TIMEOUT_MS 40
+// ESP-NOW reports the per-frame result once its own MAC-level retries finish,
+// which takes a few milliseconds. A long wait here would stall the queue and
+// drop key transitions during a burst of typing.
+#define TX_CALLBACK_TIMEOUT_MS 10
 #define REPORT_REFRESH_MS 100
 
 static const char *TAG = "ESPKeyboardS3";

@@ -20,6 +20,8 @@ into a two-board wireless keyboard bridge.
 ### Removed
 
 - The web interface, web server, and web-based firmware update path.
+- The HID mouse interface, its report descriptor, and its endpoint. The device
+  enumerates as a keyboard only.
 - The legacy Make-based builds, standalone bootloader, and old host/demo
   utilities.
 - The `esp82xx` submodule and obsolete configuration, notes, and assets that
@@ -33,7 +35,15 @@ into a two-board wireless keyboard bridge.
 - Migrated the ESP8266 firmware to ESP8266 RTOS SDK 3.4.0 and its CMake
   project/component build system.
 - Kept the low-speed, bit-banged USB HID device, and adapted its GPIO/interrupt
-  setup and timing-sensitive assembly for the RTOS SDK toolchain.
+  setup and timing-sensitive assembly for the RTOS SDK toolchain. The RTOS SDK
+  needs the GPIO interrupt line unmasked explicitly and links `.rodata` into
+  flash-mapped instruction space, so the interrupt is enabled by hand and the
+  USB descriptors are pinned to DRAM.
+- Completed the device's control endpoint: standard `GET_STATUS`,
+  `GET_CONFIGURATION` and `GET_INTERFACE`, the HID `GET_REPORT`, `GET_IDLE` and
+  `GET_PROTOCOL` requests, LED state capture from `SET_REPORT`, and the data
+  toggle reset that `SET_CONFIGURATION` and `CLEAR_FEATURE(ENDPOINT_HALT)`
+  require.
 - Added an ESP-NOW receiver to the ESP8266 firmware. It validates its paired
   transmitter, sequences complete keyboard-state reports, forwards them to
   the USB keyboard endpoint, and releases keys after a transmitter timeout.

@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
@@ -14,6 +15,12 @@
 #include "tcpip_adapter.h"
 
 static const char *TAG = "ESPKeyboard8266";
+
+// A transmitter reboot resets its sequence counter, so tolerate a short run of
+// seemingly stale packets (duplicates from its retry loop) before resyncing.
+#define SEQUENCE_RESYNC_AFTER 8
+#define TRANSMITTER_TIMEOUT_MS 1500
+
 static QueueHandle_t report_queue;
 static uint8_t paired_mac[6];
 static volatile TickType_t last_packet_tick;
@@ -51,6 +58,14 @@ static void esp_now_receive_callback(const uint8_t *mac_addr, const uint8_t *dat
     keyboard_link_packet_t packet;
     memcpy(&packet, data, sizeof(packet));
     if (packet.version != KEYBOARD_LINK_VERSION) {
+        return;
+    }
+
+    if (usb_internal_state.configuration == 0) {
+        // No USB host is listening. Dropping the snapshot here keeps the queue
+        // from filling up and replaying stale keystrokes once one shows up;
+        // every packet carries the complete state, so the next one catches up.
+        last_packet_tick = xTaskGetTickCount();
         return;
     }
 
@@ -106,18 +121,27 @@ static void keyboard_report_task(void *arg)
     bool have_sequence = false;
     bool report_pending = true;
     uint16_t last_sequence = 0;
+    unsigned int stale_packets = 0;
+    uint8_t last_leds = 0;
 
     (void)arg;
     for (;;) {
         if (!report_pending && xQueueReceive(report_queue, &packet, 1) == pdTRUE) {
             uint16_t sequence = keyboard_link_get_sequence(&packet);
             if (have_sequence && !sequence_is_newer(sequence, last_sequence)) {
-                continue;
-            }
-            if (have_sequence && (uint16_t)(sequence - last_sequence) != 1) {
+                // The transmitter restarts its counter at zero when it reboots,
+                // so a run of packets that all look old means the link has to
+                // resynchronize instead of discarding them as duplicates.
+                if (++stale_packets < SEQUENCE_RESYNC_AFTER) {
+                    continue;
+                }
+                ESP_LOGW(TAG, "Transmitter restarted; resynchronizing at sequence %u",
+                        (unsigned)sequence);
+            } else if (have_sequence && (uint16_t)(sequence - last_sequence) != 1) {
                 ESP_LOGW(TAG, "ESP-NOW sequence gap: %u -> %u",
                         (unsigned)last_sequence, (unsigned)sequence);
             }
+            stale_packets = 0;
             have_sequence = true;
             last_sequence = sequence;
             if (memcmp(current_report, packet.report, sizeof(current_report)) != 0) {
@@ -129,11 +153,18 @@ static void keyboard_report_task(void *arg)
         TickType_t now = xTaskGetTickCount();
         if (memcmp(current_report, (uint8_t[KEYBOARD_LINK_REPORT_SIZE]){0},
                     sizeof(current_report)) != 0 &&
-                (TickType_t)(now - last_packet_tick) >= pdMS_TO_TICKS(1500)) {
+                (TickType_t)(now - last_packet_tick) >=
+                        pdMS_TO_TICKS(TRANSMITTER_TIMEOUT_MS)) {
             memset(current_report, 0, sizeof(current_report));
             xQueueReset(report_queue);
             report_pending = true;
             ESP_LOGW(TAG, "Transmitter timed out; releasing all keys");
+        }
+
+        uint8_t leds = usb_get_keyboard_leds();
+        if (leds != last_leds) {
+            last_leds = leds;
+            ESP_LOGI(TAG, "Host keyboard LEDs: 0x%02x", (unsigned)leds);
         }
 
         if (report_pending) {
@@ -152,6 +183,10 @@ static void keyboard_report_task(void *arg)
 
 void app_main(void)
 {
+    const TickType_t usb_enumeration_timeout = pdMS_TO_TICKS(2000);
+    const TickType_t usb_wait_interval = pdMS_TO_TICKS(10);
+    TickType_t usb_wait_started;
+
     if (CONFIG_ESPNOW_CHANNEL < 1 || CONFIG_ESPNOW_CHANNEL > 13) {
         ESP_LOGE(TAG, "ESP-NOW channel must be between 1 and 13");
         return;
@@ -163,6 +198,29 @@ void app_main(void)
         return;
     }
 
+    ESP_ERROR_CHECK(usb_init());
+    usb_wait_started = xTaskGetTickCount();
+    while (usb_internal_state.configuration == 0 &&
+            (TickType_t)(xTaskGetTickCount() - usb_wait_started) <
+                    usb_enumeration_timeout) {
+        vTaskDelay(usb_wait_interval);
+    }
+    if (usb_internal_state.configuration == 0) {
+        ESP_LOGW(TAG, "USB enumeration stalled: GPIO IRQs=%u D-=%d D+=%d "
+                "setup tokens=%u packets=%u last=%02x/%02x value=%04x "
+                "index=%04x length=%u; starting ESP-NOW anyway",
+                (unsigned)usb_internal_state.debug,
+                gpio_get_level((gpio_num_t)DMINUS),
+                gpio_get_level((gpio_num_t)DPLUS),
+                (unsigned)usb_internal_state.setup_token_count,
+                (unsigned)usb_internal_state.setup_packet_count,
+                (unsigned)(usb_internal_state.last_setup_request >> 8),
+                (unsigned)(usb_internal_state.last_setup_request & 0xff),
+                (unsigned)usb_internal_state.last_setup_value,
+                (unsigned)usb_internal_state.last_setup_index,
+                (unsigned)usb_internal_state.last_setup_length);
+    }
+
     initialize_wifi();
     if (!keyboard_link_parse_mac(CONFIG_ESPNOW_PEER_MAC, paired_mac)) {
         ESP_LOGE(TAG, "Set the transmitter MAC in menuconfig to enable ESP-NOW");
@@ -170,7 +228,6 @@ void app_main(void)
     }
 
     initialize_esp_now();
-    ESP_ERROR_CHECK(usb_init());
     if (xTaskCreate(keyboard_report_task, "keyboard_report", 3072, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Could not create the keyboard report task");
     }

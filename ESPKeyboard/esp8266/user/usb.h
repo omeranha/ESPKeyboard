@@ -46,7 +46,7 @@ struct usb_internal_state_struct
 
 	uint32_t packet_size; //Of data currently in usb_buffer
 	uint32_t last_token;
-	uint32_t debug;
+	volatile uint32_t debug; //GPIO interrupt entries, incremented by the USB ISR.
 
 	struct usb_endpoint * ce;  //Current endpoint (set by IN/OUT PIDs)
 	struct usb_endpoint eps[ENDPOINTS];
@@ -56,6 +56,15 @@ struct usb_internal_state_struct
 	uint32_t my_address;	//For the current address set up by the setup portion of USB.
 	uint32_t setup_request; //1 if needing setup packet.
 	uint32_t there_is_a_host; //1 if there is a host at all, i.e. enumeration attempts have begun.
+	volatile uint32_t setup_token_count;
+	volatile uint32_t setup_packet_count;
+	volatile uint32_t last_setup_request;
+	volatile uint32_t last_setup_value;
+	volatile uint32_t last_setup_index;
+	volatile uint32_t last_setup_length;
+	uint32_t pending_address;
+	uint32_t address_pending;
+	volatile uint32_t configuration; //Nonzero after the host selects a configuration.
 };
 
 extern struct usb_internal_state_struct usb_internal_state __attribute__((aligned(4)));
@@ -65,8 +74,11 @@ void usb_handle_custom_control( int bmRequestType, int bRequest, int wLength, st
 
 //Functions within this suite
 esp_err_t usb_init(void);
-esp_err_t usb_send_mouse_report(const uint8_t report[4]);
 esp_err_t usb_send_keyboard_report(const uint8_t report[8]);
+
+//Latest keyboard LED state the host sent through SET_REPORT.
+//Bit 0 Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock, bit 3 Compose, bit 4 Kana.
+uint8_t usb_get_keyboard_leds(void);
 
 //This function is provided in assembly.
 extern void gpio_intr(void *arg);

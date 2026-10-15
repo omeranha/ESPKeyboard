@@ -11,6 +11,32 @@ if ($Flash -and $Menuconfig) {
     throw 'Choose either -Flash or -Menuconfig for one invocation.'
 }
 
+function Invoke-Native {
+    param([string]$Executable, [string[]]$Arguments, [string]$FailureMessage, [switch]$Capture)
+
+    # The SDK tools report progress and version notices on stderr. With 'Stop'
+    # in effect PowerShell turns that into a terminating error, so relax the
+    # preference around the call and judge the result by the exit code.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($Capture) {
+            $output = & $Executable @Arguments 2>&1
+        } else {
+            & $Executable @Arguments
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($exitCode -ne 0) {
+        if ($Capture) { $output | ForEach-Object { Write-Host $_.ToString() } }
+        throw $FailureMessage
+    }
+    if ($Capture) { return $output }
+}
+
 if (-not $SdkPath) {
     if ($env:ESP8266_RTOS_SDK_PATH) {
         $SdkPath = $env:ESP8266_RTOS_SDK_PATH
@@ -58,12 +84,10 @@ if ($Flash -and -not $Port) {
 
 # Import the SDK tool paths into this process only; leave the user's ESP-IDF
 # environment and persistent PATH unchanged.
-$exportOutput = & $sdkPython $idfTools export
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not load the ESP8266 SDK tool environment.'
-}
+$exportOutput = Invoke-Native -Executable $sdkPython -Arguments @($idfTools, 'export') `
+    -FailureMessage 'Could not load the ESP8266 SDK tool environment.' -Capture
 foreach ($line in $exportOutput) {
-    if ($line -match '^SET "([^=]+)=(.*)"$') {
+    if ($line.ToString() -match '^SET "([^=]+)=(.*)"$') {
         $name = $matches[1]
         $value = $matches[2].Replace('%PATH%', $env:PATH)
         Set-Item -Path "Env:$name" -Value $value
@@ -74,23 +98,14 @@ $idfPy = Join-Path $SdkPath 'tools\idf.py'
 Push-Location $PSScriptRoot
 try {
     if ($Menuconfig) {
-        & $sdkPython $idfPy menuconfig
-        if ($LASTEXITCODE -ne 0) {
-            throw 'ESP8266 project menuconfig failed.'
-        }
+        Invoke-Native -Executable $sdkPython -Arguments @($idfPy, 'menuconfig') -FailureMessage 'ESP8266 project menuconfig failed.'
         return
     }
 
-    & $sdkPython $idfPy build
-    if ($LASTEXITCODE -ne 0) {
-        throw 'ESP8266 firmware build failed.'
-    }
+    Invoke-Native -Executable $sdkPython -Arguments @($idfPy, 'build') -FailureMessage 'ESP8266 firmware build failed.'
 
     if ($Flash) {
-        & $sdkPython $idfPy -p $Port flash
-        if ($LASTEXITCODE -ne 0) {
-            throw "Flashing the firmware to $Port failed."
-        }
+        Invoke-Native -Executable $sdkPython -Arguments @($idfPy, '-p', $Port, 'flash') -FailureMessage "Flashing the firmware to $Port failed."
     }
 } finally {
     Pop-Location
