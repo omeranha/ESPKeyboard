@@ -1,19 +1,30 @@
 #ifndef _ESPKEYBOARD_CONFIG_H
 #define _ESPKEYBOARD_CONFIG_H
 
-// Link settings. There is no menuconfig on this SDK, so edit these and rebuild.
-
-// Must match CONFIG_ESPNOW_CHANNEL on the ESP32-S3 transmitter. Legal 1..13.
-// ESP-NOW peers only hear each other on the same channel, and this firmware
-// never associates with an access point, so the channel is pinned by hand.
-#define ESPNOW_CHANNEL 1
+// Written by build.ps1 from its -PeerMac and -Channel switches. Always present
+// because the script regenerates it before every compile.
+#include "espkeyboard_build_config.h"
 
 // Station MAC of the paired ESP32-S3, which it prints at boot as
 // "Station MAC: ...". Reports from any other sender are ignored.
 //
+// Prefer passing it per build so it stays out of version control:
+//     .\build.ps1 -PeerMac f0:9e:9e:21:9d:98
+// The script remembers it for later builds. Setting it here instead also
+// works. The radio stays off until it is a valid unicast address.
+//
 // This is pairing, not authentication: ESP-NOW frames here are unencrypted and
 // a MAC address can be spoofed. Use these boards in a trusted RF environment.
-#define ESPNOW_PEER_MAC { 0xf0, 0x9e, 0x9e, 0x21, 0x9d, 0x98 }
+#ifndef ESPNOW_PEER_MAC
+#define ESPNOW_PEER_MAC "00:00:00:00:00:00"
+#endif
+
+// Must match CONFIG_ESPNOW_CHANNEL on the transmitter. Legal 1..13. ESP-NOW
+// peers only hear each other on the same channel, and this firmware never
+// associates with an access point, so the channel is pinned by hand.
+#ifndef ESPNOW_CHANNEL
+#define ESPNOW_CHANNEL 1
+#endif
 
 // Release every key if the transmitter goes quiet for this long. It refreshes
 // the current report every 100 ms even when nothing changes, so this is about
