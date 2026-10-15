@@ -20,7 +20,11 @@
 #define _INASM_
 #include "usb_table_1bit.h"
 
-.section .iram1,"ax"
+// The NONOS linker script (sdk/ld/eagle.app.v6.ld) maps .text into
+// iram1_0_seg, so plain .text already puts this handler in IRAM. Do not move it
+// to a named section: anything the host's packet timing depends on has to be
+// fetched without touching flash.
+.text
 .align 4
 
 
@@ -37,6 +41,15 @@
 //				Optimal spot: -9
 #define PHASE_DELAY     -9
 #define DELAY_ONE_USB_BIT	call0 util_wait_usb_ccount
+
+//Bump one of the usb_internal_state.diag counters.  Every use sits on a path
+//that is about to leave the bit loop, so clobbering a5 and a6 is free; a14 must
+//still hold usb_ramtable.
+#define BUMP_DIAG(index)						\
+	_l32i.n a6, a14, USB_INTERNAL_STATE_OFFSET		;\
+	_l32i.n a5, a6, (USB_OFFSET_DIAG + 4*(index))		;\
+	_addi.n a5, a5, 1					;\
+	_s32i.n a5, a6, (USB_OFFSET_DIAG + 4*(index))
 
 //We handle advancing the timer by one tick in here.
 //Because 80 MHz does not divide evenly into 1.5 MHz, we have to advance by
@@ -102,10 +115,9 @@ gpio_intr:
 	//Load the table.
 	movi       a14, usb_ramtable	//This is actually very slow.
 
-	_l32i.n    a6, a14, USB_INTERNAL_STATE_OFFSET
-	_l32i.n    a5, a6, USB_OFFSET_DEBUG
-	_addi.n    a5, a5, 1
-	_s32i.n    a5, a6, USB_OFFSET_DEBUG
+	//Nothing else goes here.  Everything between the interrupt firing and
+	//find_high eats into the eight-bit SYNC field we have to latch onto, so
+	//the entry counter is bumped on the way out instead.
 
 usb_reinstate: //Come back up here if we are expecting more data.
 
@@ -135,6 +147,7 @@ find_high:	//Search for when the pin is high.
 	addi.n a9, a9, -1
 	bbsi a6, DPLUS, done_high
 	bnez a9, find_high
+	BUMP_DIAG(USB_DIAG_NO_HIGH)
 	j end_gpio_intr
 done_high:
 find_low:	//Once we find it high, we need to look for the falling edge so we can sync our clocks.
@@ -142,6 +155,7 @@ find_low:	//Once we find it high, we need to look for the falling edge so we can
 	addi.n a9, a9, -1
 	bbci a6, DPLUS, done_low
 	bnez a9, find_low
+	BUMP_DIAG(USB_DIAG_NO_LOW)
 	j end_gpio_intr
 done_low:
 
@@ -159,7 +173,7 @@ done_low:
 looper:
 	DEBUG_HIGH
 	addi a9, a9, -1
-	beqz a9, end_gpio_intr
+	beqz a9, bit_timeout
 
 
 	DELAY_ONE_USB_BIT
@@ -197,6 +211,7 @@ looper:
 		_beq       a6, a8,  first_byte //Check to see if this is the first byte.
 		_addi      a6, a6, (USB_BUFFERSIZE-1)
 		_blt	   a8, a6,  write_cont //Make sure there's not an overflow.
+		BUMP_DIAG(USB_DIAG_OVERFLOW)
 		_j 		end_gpio_intr
 
 	first_byte:
@@ -237,14 +252,20 @@ term:
 	//buffer still holds the previous packet, so dispatching here would replay
 	//its PID: a duplicate IN response, or a phantom ACK that inverts the data
 	//toggle and desynchronizes the endpoint.
-	beqz a10, end_gpio_intr
+	beqz a10, late_lock
 
 	//Check to make sure we have more than just a token.
 	blti a10, 2, skip_crc_check
 
 	//Check to see if CRCs match.
-	bne a3, a5, end_gpio_intr
+	beq a3, a5, skip_crc_check
+		//Record what we decoded so a stalled device can be told apart from a
+		//device that is decoding the wrong bits.
+		_s32i.n a10, a15, USB_OFFSET_DECODE_LEN
+		BUMP_DIAG(USB_DIAG_CRC_FAIL)
+		j end_gpio_intr
 skip_crc_check:
+	BUMP_DIAG(USB_DIAG_DISPATCH)
 
 	//CRCs Match.  Proceed with protocol.
 	mov a3, a15
@@ -265,7 +286,7 @@ skip_crc_check:
 		bnez a15, not_ack
 		j usb_pid_handle_ack
 	not_ack:
-		j end_gpio_intr
+		j bad_pid
 	token_or_data:
 		bbsi a2, 1, data_msg        //Jump to the correct C function, don't call!  We already put the return address in A0.
 			extui a15, a2, 2, 6
@@ -285,7 +306,7 @@ skip_crc_check:
 			bnez a8, not_out
 			j usb_pid_handle_out
 		not_out:
-			j end_gpio_intr //We don't understand this message
+			j bad_pid //We don't understand this message
 		data_msg:
 			extui a15, a2, 2, 6
 			extui a4, a2, 3, 1
@@ -297,9 +318,23 @@ skip_crc_check:
 			bnez a8, not_data2
 			j usb_pid_handle_data
 		not_data2:
-			j end_gpio_intr  //Unmatched message?
+			j bad_pid  //Unmatched message?
 
 	//No code here should be called.
+
+//Diagnostic exits.  These are cold paths, so the counter bump costs nothing
+//that matters, and a14 still holds usb_ramtable on every route that gets here.
+bit_timeout:
+	BUMP_DIAG(USB_DIAG_BIT_TIMEOUT)
+	j end_gpio_intr
+
+late_lock:
+	BUMP_DIAG(USB_DIAG_LATE_LOCK)
+	j end_gpio_intr
+
+bad_pid:
+	BUMP_DIAG(USB_DIAG_BAD_PID)
+	j end_gpio_intr
 
 end_gpio_intr:
 
@@ -308,6 +343,14 @@ end_gpio_intr:
 
 	//This code acknowledges the interrupt.  I think it looks wrong, but it seems to work...
 	movi       a14, usb_ramtable
+
+	//Count this interrupt now that timing no longer matters.  Every route out
+	//of the handler passes through here exactly once per interrupt.
+	_l32i.n    a6, a14, USB_INTERNAL_STATE_OFFSET
+	_l32i.n    a5, a6, USB_OFFSET_DEBUG
+	_addi.n    a5, a5, 1
+	_s32i.n    a5, a6, USB_OFFSET_DEBUG
+
 	_l32i.n    a11, a14, GPIO_BASE_OFFSET
 	_l32i.n a4, a11, GPIO_OFFSET_GPIO_STATUS
 	_s32i.n a4, a11, GPIO_OFFSET_GPIO_STATUS_W1TC

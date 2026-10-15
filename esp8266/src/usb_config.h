@@ -2,6 +2,7 @@
 #define _USB_CONFIG_H
 
 //Defines the number of endpoints for this device. (Always add one for EP0)
+//One control endpoint plus the keyboard's interrupt IN endpoint.
 #define ENDPOINTS 2
 
 //Defines a pin that is useful for debugging USB on a logic analyzer
@@ -23,13 +24,16 @@
 
 
 #ifdef INSTANCE_DESCRIPTORS
-// Descriptors are read from inside the timing-critical USB interrupt. They must
-// stay in DRAM: rodata is linked into the flash-mapped instruction space, where
-// every byte or half-word load traps into the SDK's load/store emulation
-// handler and costs far more than the USB turnaround budget allows.
+// Descriptors are read from inside the timing-critical USB interrupt, so they
+// must be in RAM rather than flash-mapped instruction space. On the NONOS SDK
+// that is already true: sdk/ld/eagle.app.v6.ld places .rodata and .rodata.*
+// into dram0_0_seg, so plain "static const" is enough and no attribute is
+// needed. Re-check that if the linker script ever changes -- reading a
+// descriptor from flash traps into the load/store emulation handler and blows
+// the USB turnaround budget.
 
 //Taken from http://www.usbmadesimple.co.uk/ums_ms_desc_dev.htm
-static const uint8_t DRAM_ATTR device_descriptor[] = {
+static const uint8_t device_descriptor[] = {
 	18, //Length
 	1,  //Type (Device)
 	0x10, 0x01, //Spec
@@ -46,7 +50,7 @@ static const uint8_t DRAM_ATTR device_descriptor[] = {
 	1, //Max number of configurations
 };
 
-static const uint8_t DRAM_ATTR config_descriptor[] = {
+static const uint8_t config_descriptor[] = {
 	// configuration descriptor, USB spec 9.6.3, page 264-266, Table 9-10
 	9, 					// bLength;
 	2,					// bDescriptorType;
@@ -90,7 +94,7 @@ static const uint8_t DRAM_ATTR config_descriptor[] = {
 
 
 //From http://codeandlife.com/2012/06/18/usb-hid-keyboard-with-v-usb/
-static const uint8_t DRAM_ATTR keyboard_hid_desc[63] = {   /* USB report descriptor */
+static const uint8_t keyboard_hid_desc[63] = {   /* USB report descriptor */
     0x05, 0x01,                    // USAGE_PAGE (Generic Desktop)
     0x09, 0x06,                    // USAGE (Keyboard)
     0xa1, 0x01,                    // COLLECTION (Application)
@@ -128,10 +132,10 @@ static const uint8_t DRAM_ATTR keyboard_hid_desc[63] = {   /* USB report descrip
 //Ever wonder how you have more than 6 keys down at the same time on a USB keyboard?  It's easy. Enumerate two keyboards!
 
 
-static const uint8_t DRAM_ATTR string0[] = {4, 3, 0x09, 0x04};
-static const uint8_t DRAM_ATTR string1[] = {14, 3, 'C', 0, 'N', 0, 'L', 0, 'o', 0, 'h', 0, 'r', 0};
-static const uint8_t DRAM_ATTR string2[] = {24, 3, 'E', 0, 'S', 0, 'P', 0, 'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0};
-static const uint8_t DRAM_ATTR string3[] = {8, 3, '0', 0, '0', 0, '0', 0};
+static const uint8_t string0[] = {4, 3, 0x09, 0x04};
+static const uint8_t string1[] = {14, 3, 'C', 0, 'N', 0, 'L', 0, 'o', 0, 'h', 0, 'r', 0};
+static const uint8_t string2[] = {24, 3, 'E', 0, 'S', 0, 'P', 0, 'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0};
+static const uint8_t string3[] = {8, 3, '0', 0, '0', 0, '0', 0};
 
 
 // This table defines which descriptor data is sent for each specific
@@ -143,7 +147,7 @@ struct descriptor_list_struct {
 	uint8_t		length;
 };
 
-static const struct descriptor_list_struct DRAM_ATTR descriptor_list[] = {
+static const struct descriptor_list_struct descriptor_list[] = {
 	{0x0100, 0x0000, device_descriptor, sizeof(device_descriptor)},
 	{0x0200, 0x0000, config_descriptor, sizeof(config_descriptor)},
 	{0x2200, 0x0000, keyboard_hid_desc, sizeof(keyboard_hid_desc)},

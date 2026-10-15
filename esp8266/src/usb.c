@@ -1,19 +1,28 @@
 #define NEED_CONSTANTS
 
 #include "usb.h"
-#include <string.h>
-#include <driver/gpio.h>
-#include <esp_attr.h>
-#include <freertos/FreeRTOS.h>
-#include <rom/ets_sys.h>
-#include <sdkconfig.h>
+#include <c_types.h>
+#include <eagle_soc.h>
+#include <ets_sys.h>
+#include <gpio.h>
+#include <osapi.h>
+#include "esp8266_rom.h"
 #include "usb_table_1bit.h"
 
-#if CONFIG_ESP8266_DEFAULT_CPU_FREQ_MHZ != 80
-#error "The bit-banged USB timing is calibrated for an 80 MHz CPU clock."
-#endif
+// The bit timing in usb_asm_1bit.S is calibrated for an 80 MHz CPU clock.
+// user_init() calls system_update_cpu_freq(80); there is no compile-time
+// setting to check on this SDK, so do not change that call.
 
 struct usb_internal_state_struct usb_internal_state __attribute__((aligned(4)));
+
+// usb_asm_1bit.S reaches into this structure with hard-coded offsets. Keep the
+// two definitions from drifting apart silently.
+_Static_assert(offsetof(struct usb_internal_state_struct, usb_buffer) == USB_OFFSET_BUFFER, "usb_buffer moved away from USB_OFFSET_BUFFER");
+_Static_assert(offsetof(struct usb_internal_state_struct, packet_size) == USB_OFFSET_PACKET_SIZE, "packet_size moved away from USB_OFFSET_PACKET_SIZE");
+_Static_assert(offsetof(struct usb_internal_state_struct, last_token) == USB_OFFSET_LAST_TOKEN, "last_token moved away from USB_OFFSET_LAST_TOKEN");
+_Static_assert(offsetof(struct usb_internal_state_struct, debug) == USB_OFFSET_DEBUG, "debug moved away from USB_OFFSET_DEBUG");
+_Static_assert(offsetof(struct usb_internal_state_struct, diag) == USB_OFFSET_DIAG, "diag moved away from USB_OFFSET_DIAG");
+_Static_assert(offsetof(struct usb_internal_state_struct, last_decode_len) == USB_OFFSET_DECODE_LEN, "last_decode_len moved away from USB_OFFSET_DECODE_LEN");
 
 static uint8_t keyboard_report[8];
 static uint8_t keyboard_leds;
@@ -25,8 +34,7 @@ static uint8_t control_reply[2];
 #include <usb_config.h>
 
 //Point an endpoint at the data the host asked for, clamped to the requested length.
-static void IRAM_ATTR usb_arm_in_transfer( struct usb_endpoint * e, const uint8_t * data,
-		uint16_t length, uint16_t requested )
+static void usb_arm_in_transfer( struct usb_endpoint * e, const uint8_t * data, uint16_t length, uint16_t requested )
 {
 	e->ptr_in = data;
 	e->place_in = 0;
@@ -37,7 +45,7 @@ static void IRAM_ATTR usb_arm_in_transfer( struct usb_endpoint * e, const uint8_
 //USB 2.0 9.4.5: configuring the device resets the data toggle of every endpoint.
 //Without this a bus reset or a host sleep/wake cycle leaves our toggles inverted
 //and the host silently discards every report as a retransmission.
-static void IRAM_ATTR usb_reset_data_endpoints( struct usb_internal_state_struct * ist )
+static void usb_reset_data_endpoints( struct usb_internal_state_struct * ist )
 {
 	int i;
 	for( i = 1; i < ENDPOINTS; i++ )
@@ -55,7 +63,7 @@ static void IRAM_ATTR usb_reset_data_endpoints( struct usb_internal_state_struct
 }
 
 //Received a setup for a specific endpoint.
-void IRAM_ATTR usb_pid_handle_setup( uint32_t this_token, struct usb_internal_state_struct * ist )
+void usb_pid_handle_setup( uint32_t this_token, struct usb_internal_state_struct * ist )
 {
 	uint8_t addr = (this_token>>8) & 0x7f;
 	uint8_t endp = (this_token>>15) & 0xf;
@@ -79,11 +87,11 @@ end:
 	__asm__ __volatile__( "movi a0, usb_reinstate" ); //After this token, we are immediately expecting another grouping.  This short-circuits the 'return'.
 }
 
-void IRAM_ATTR usb_pid_handle_sof( uint32_t this_token, struct usb_internal_state_struct * ist )
+void usb_pid_handle_sof( uint32_t this_token, struct usb_internal_state_struct * ist )
 {
 }
 
-void IRAM_ATTR usb_pid_handle_in( uint32_t this_token, struct usb_internal_state_struct * ist )
+void usb_pid_handle_in( uint32_t this_token, struct usb_internal_state_struct * ist )
 {
 	uint8_t addr = (this_token>>8) & 0x7f;
 	uint8_t endp = (this_token>>15) & 0xf;
@@ -139,14 +147,14 @@ void IRAM_ATTR usb_pid_handle_in( uint32_t this_token, struct usb_internal_state
 	}
 	else
 	{
-		memcpy( sendnow+2, e->ptr_in + e->place_in, tosend );
+		ets_memcpy( sendnow+2, e->ptr_in + e->place_in, tosend );
 		usb_send_data( sendnow, tosend+2, 0 );
 		e->advance_in = tosend;
 	}
 	return;
 }
 
-void IRAM_ATTR usb_pid_handle_out( uint32_t this_token, struct usb_internal_state_struct * ist )
+void usb_pid_handle_out( uint32_t this_token, struct usb_internal_state_struct * ist )
 {
 	//We need to handle this here because we could have an interrupt in the middle of a control or bulk transfer.
 	//This will correctly swap back the endpoint.
@@ -159,7 +167,7 @@ void IRAM_ATTR usb_pid_handle_out( uint32_t this_token, struct usb_internal_stat
 	__asm__ __volatile__( "movi a0, usb_reinstate" );  //After this token, we are immediately expecting another grouping.  This short-circuits the 'return'.
 }
 
-void IRAM_ATTR usb_pid_handle_data( uint32_t this_token, struct usb_internal_state_struct * ist, uint32_t which_data )
+void usb_pid_handle_data( uint32_t this_token, struct usb_internal_state_struct * ist, uint32_t which_data )
 {
 	//Received data from host.
 
@@ -199,8 +207,7 @@ void IRAM_ATTR usb_pid_handle_data( uint32_t this_token, struct usb_internal_sta
 				int i;
 				for( i = 0; i < DESCRIPTOR_LIST_ENTRIES; i++ )
 				{
-					if( descriptor_list[i].wIndex == s->wIndex &&
-						descriptor_list[i].wValue == s->wValue )
+					if( descriptor_list[i].wIndex == s->wIndex && descriptor_list[i].wValue == s->wValue )
 						break;
 				}
 
@@ -304,7 +311,7 @@ custom_control:
 			acc = e->max_size_out - place;
 		}
 
-		memcpy( e->ptr_out + e->got_size_out, ist->usb_buffer+1, acc );  //First byte of USB buffer is token.
+		ets_memcpy( e->ptr_out + e->got_size_out, ist->usb_buffer+1, acc );  //First byte of USB buffer is token.
 		e->got_size_out += acc;
 		if( e->got_size_out == e->max_size_out && e->transfer_done_ptr ) {
 			e->ptr_out = 0;
@@ -322,7 +329,7 @@ just_ack:
 	}
 }
 
-void IRAM_ATTR usb_pid_handle_ack( uint32_t this_token, struct usb_internal_state_struct * ist )
+void usb_pid_handle_ack( uint32_t this_token, struct usb_internal_state_struct * ist )
 {
 	struct usb_endpoint * e = ist->ce;
 	if( !e ) return;
@@ -338,6 +345,8 @@ void IRAM_ATTR usb_pid_handle_ack( uint32_t this_token, struct usb_internal_stat
 		if( e->transfer_in_done_ptr ) (*e->transfer_in_done_ptr) = 1;
 		e->transfer_in_done_ptr = 0;
 	}
+	//USB 2.0 9.4.6: the new address only takes effect once the status stage of
+	//SET_ADDRESS has been acknowledged, not when the request arrives.
 	if( e == &ist->eps[0] && ist->address_pending )
 	{
 		ist->my_address = ist->pending_address;
@@ -346,75 +355,54 @@ void IRAM_ATTR usb_pid_handle_ack( uint32_t this_token, struct usb_internal_stat
 }
 
 
-esp_err_t usb_init(void)
+void ICACHE_FLASH_ATTR usb_init( void )
 {
-	const uint32_t usb_gpio_mask = (1U << DMINUS) | (1U << DPLUS);
-	const gpio_config_t config = {
-		.pin_bit_mask = usb_gpio_mask,
-		.mode = GPIO_MODE_INPUT,
-		.pull_up_en = GPIO_PULLUP_DISABLE,
-		.pull_down_en = GPIO_PULLDOWN_DISABLE,
-		.intr_type = GPIO_INTR_DISABLE,
-	};
-	esp_err_t err;
+	volatile uint32_t * gp = (volatile uint32_t*)GPIO_BASE_REG;
 
-	// Both lines float: the USB side is driven by the external 1.5k pull-up on
-	// D-, not by the weak internal pull-ups.
-	err = gpio_config(&config);
-	if (err != ESP_OK) return err;
+	ETS_GPIO_INTR_DISABLE();                     //Close the GPIO interrupt
 
-	// Hold both USB lines low briefly so the host sees a fresh connection.
-	err = gpio_set_level((gpio_num_t)DMINUS, 0);
-	if (err != ESP_OK) return err;
-	err = gpio_set_level((gpio_num_t)DPLUS, 0);
-	if (err != ESP_OK) return err;
-	err = gpio_set_direction((gpio_num_t)DMINUS, GPIO_MODE_OUTPUT);
-	if (err != ESP_OK) return err;
-	err = gpio_set_direction((gpio_num_t)DPLUS, GPIO_MODE_OUTPUT);
-	if (err != ESP_OK) return err;
-	ets_delay_us(10000);
+	PIN_FUNC_SELECT( PERIPHSDPLUS, FUNCDPLUS );
+	PIN_FUNC_SELECT( PERIPHSDMINUS, FUNCDMINUS );
 
-	err = gpio_set_direction((gpio_num_t)DMINUS, GPIO_MODE_INPUT);
-	if (err != ESP_OK) return err;
-	err = gpio_set_direction((gpio_num_t)DPLUS, GPIO_MODE_INPUT);
-	if (err != ESP_OK) return err;
-	err = gpio_set_intr_type((gpio_num_t)DPLUS, GPIO_INTR_POSEDGE);
-	if (err != ESP_OK) return err;
+	gp[GPIO_OFFSET_DIR_IN/4] = _BV(DMINUS) | _BV(DPLUS);
 
-	*(volatile uint32_t *)(GPIO_BASE_REG + GPIO_OFFSET_GPIO_STATUS_W1TC) = usb_gpio_mask;
-	err = gpio_isr_register(gpio_intr, NULL, 0, NULL);
-	if (err != ESP_OK) return err;
+	//D- carries the low-speed idle level. The board also has an external
+	//pull-up on D-, but keep the internal one enabled: this is the exact
+	//configuration the upstream driver is known to enumerate with.
+	PIN_PULLUP_EN( PERIPHSDMINUS );
+	PIN_PULLUP_DIS( PERIPHSDPLUS );
 
-	// gpio_isr_register() only attaches the handler. Nothing in the SDK enables
-	// the GPIO interrupt line itself, so without this the USB ISR never runs.
-	_xt_isr_unmask(1 << ETS_GPIO_INUM);
-	return ESP_OK;
+	GPIO_REG_WRITE( GPIO_STATUS_W1TC_ADDRESS, _BV(DMINUS) | _BV(DPLUS) );
+	ETS_GPIO_INTR_ATTACH( gpio_intr, NULL );     //Attach the gpio interrupt.
+	gpio_pin_intr_state_set( GPIO_ID_PIN(DPLUS), GPIO_PIN_INTR_POSEDGE );  //Rising edge: start of packet.
+
+	//Forcibly disconnect from the bus so the host sees a fresh attach.
+	gp[GPIO_OFFSET_CLEAR/4] = _BV(DPLUS) | _BV(DMINUS);
+	gp[GPIO_OFFSET_DIR_OUT/4] = _BV(DPLUS) | _BV(DMINUS);
+	ets_delay_us( 10000 );
+	gp[GPIO_OFFSET_DIR_IN/4] = _BV(DPLUS) | _BV(DMINUS);
+
+	ETS_GPIO_INTR_ENABLE();
 }
 
-static esp_err_t usb_send_report(uint8_t endpoint_number, uint8_t *buffer,
-		const uint8_t *report, uint16_t report_size)
+usb_result_t usb_send_keyboard_report( const uint8_t report[8] )
 {
-	struct usb_endpoint *endpoint = &usb_internal_state.eps[endpoint_number];
+	struct usb_endpoint * endpoint = &usb_internal_state.eps[1];
 
-	if (endpoint->send) return ESP_ERR_INVALID_STATE;
+	if( report == NULL ) return USB_ERR_INVALID_ARG;
+	if( endpoint->send ) return USB_ERR_BUSY;
 
-	memcpy(buffer, report, report_size);
-	endpoint->ptr_in = buffer;
+	ets_memcpy( keyboard_report, report, sizeof( keyboard_report ) );
+	endpoint->ptr_in = keyboard_report;
 	endpoint->place_in = 0;
-	endpoint->size_in = report_size;
+	endpoint->size_in = sizeof( keyboard_report );
 	// The ISR must never observe send == 1 before the buffer description above.
 	__asm__ __volatile__( "" ::: "memory" );
 	endpoint->send = 1;
-	return ESP_OK;
+	return USB_OK;
 }
 
-esp_err_t usb_send_keyboard_report(const uint8_t report[8])
-{
-	if (report == NULL) return ESP_ERR_INVALID_ARG;
-	return usb_send_report(1, keyboard_report, report, sizeof(keyboard_report));
-}
-
-uint8_t usb_get_keyboard_leds(void)
+uint8_t usb_get_keyboard_leds( void )
 {
 	return keyboard_leds;
 }

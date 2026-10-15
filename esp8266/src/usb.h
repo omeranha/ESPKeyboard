@@ -12,14 +12,36 @@
 #define USB_OFFSET_PACKET_SIZE  (USB_OFFSET_DSTATUS)
 #define USB_OFFSET_LAST_TOKEN   (USB_OFFSET_DSTATUS+4)
 #define USB_OFFSET_DEBUG        (USB_OFFSET_DSTATUS+8)
+#define USB_OFFSET_DIAG         (USB_OFFSET_DSTATUS+12)
+#define USB_OFFSET_DECODE_LEN   (USB_OFFSET_DSTATUS+44)
+
+//Reasons the receive interrupt gave up, counted in usb_internal_state.diag.
+//The assembly bumps these on the paths that leave the bit loop, so a device
+//that will not enumerate says which stage failed instead of only that nothing
+//arrived. usb_asm_1bit.S reads these indices too, so they live outside the
+//_INASM_ guard.
+#define USB_DIAG_NO_HIGH      0  //Never saw D+ high: woke up outside a packet.
+#define USB_DIAG_NO_LOW       1  //Saw D+ high but no falling edge to lock to.
+#define USB_DIAG_BIT_TIMEOUT  2  //Bit loop ran past the longest legal packet.
+#define USB_DIAG_LATE_LOCK    3  //Locked on, decoded nothing: entered after SYNC.
+#define USB_DIAG_CRC_FAIL     4  //Decoded a packet whose CRC did not check.
+#define USB_DIAG_OVERFLOW     5  //More bytes decoded than usb_buffer holds.
+#define USB_DIAG_BAD_PID      6  //Good CRC, but the PID is not one we handle.
+#define USB_DIAG_DISPATCH     7  //Packets that passed CRC and reached dispatch.
+#define USB_DIAG_COUNT        8
 
 #ifndef _INASM_
-#include <esp_err.h>
-#include <stdint.h>
+#include <c_types.h>
 #include <stddef.h>
-#include <esp_attr.h>
 
 #define EMPTY_SEND_BUFFER (uint8_t*)1
+
+typedef enum
+{
+	USB_OK = 0,
+	USB_ERR_BUSY = -1,		//Endpoint is still transmitting the previous report.
+	USB_ERR_INVALID_ARG = -2,
+} usb_result_t;
 
 struct usb_endpoint
 {
@@ -47,6 +69,8 @@ struct usb_internal_state_struct
 	uint32_t packet_size; //Of data currently in usb_buffer
 	uint32_t last_token;
 	volatile uint32_t debug; //GPIO interrupt entries, incremented by the USB ISR.
+	volatile uint32_t diag[USB_DIAG_COUNT]; //Why reception gave up, see USB_DIAG_*.
+	volatile uint32_t last_decode_len; //Bytes decoded by the last failed packet.
 
 	struct usb_endpoint * ce;  //Current endpoint (set by IN/OUT PIDs)
 	struct usb_endpoint eps[ENDPOINTS];
@@ -72,28 +96,35 @@ extern struct usb_internal_state_struct usb_internal_state __attribute__((aligne
 //Functions that must be supplied by user.
 void usb_handle_custom_control( int bmRequestType, int bRequest, int wLength, struct usb_internal_state_struct * ist );
 
-//Functions within this suite
-esp_err_t usb_init(void);
-esp_err_t usb_send_keyboard_report(const uint8_t report[8]);
+//Functions within this suite.
+//Only usb_init may live in flash; everything else runs from the interrupt.
+void ICACHE_FLASH_ATTR usb_init( void );
+
+//Hand eight bytes (modifier, reserved, six key usages) to the interrupt IN
+//endpoint. Returns USB_ERR_BUSY while the previous report is still going out,
+//so keep a single producer for this endpoint and retry.
+usb_result_t usb_send_keyboard_report( const uint8_t report[8] );
 
 //Latest keyboard LED state the host sent through SET_REPORT.
 //Bit 0 Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock, bit 3 Compose, bit 4 Kana.
-uint8_t usb_get_keyboard_leds(void);
+uint8_t usb_get_keyboard_leds( void );
 
 //This function is provided in assembly.
-extern void gpio_intr(void *arg);
+//Declared with the ISR signature ets_isr_attach expects; the handler ignores
+//the argument.
+extern void gpio_intr( void *arg );
 
 //poly_function = 0 to include CRC.
 //poly_function = 2 to exclude CRC.
 //This function is provided in assembly
 extern void usb_send_data( uint8_t * data, uint32_t length, uint32_t poly_function );
 
-void IRAM_ATTR usb_pid_handle_setup( uint32_t this_token, struct usb_internal_state_struct * ist );
-void IRAM_ATTR usb_pid_handle_sof( uint32_t this_token, struct usb_internal_state_struct * ist );
-void IRAM_ATTR usb_pid_handle_in( uint32_t this_token, struct usb_internal_state_struct * ist );
-void IRAM_ATTR usb_pid_handle_out( uint32_t this_token, struct usb_internal_state_struct * ist );
-void IRAM_ATTR usb_pid_handle_data( uint32_t this_token, struct usb_internal_state_struct * ist, uint32_t which_data );
-void IRAM_ATTR usb_pid_handle_ack( uint32_t this_token, struct usb_internal_state_struct * ist );
+void usb_pid_handle_setup( uint32_t this_token, struct usb_internal_state_struct * ist );
+void usb_pid_handle_sof( uint32_t this_token, struct usb_internal_state_struct * ist );
+void usb_pid_handle_in( uint32_t this_token, struct usb_internal_state_struct * ist );
+void usb_pid_handle_out( uint32_t this_token, struct usb_internal_state_struct * ist );
+void usb_pid_handle_data( uint32_t this_token, struct usb_internal_state_struct * ist, uint32_t which_data );
+void usb_pid_handle_ack( uint32_t this_token, struct usb_internal_state_struct * ist );
 
 extern uint32_t usb_reinstate;
 
