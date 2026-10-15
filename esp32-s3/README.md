@@ -25,8 +25,25 @@ In **ESPKeyboard ESP-NOW link**, configure the same legal Wi-Fi channel used by
 the receiver and set the paired receiver's Station MAC address. The default
 MAC is invalid so the firmware will not start the bridge until pairing is
 configured. The firmware prints this board's Station MAC at startup; enter
-that value in the receiver's menuconfig (`.\build.ps1 -Menuconfig`) as its
-paired transmitter MAC.
+that value in the receiver's configuration as its paired transmitter MAC.
+
+The receiver is [`../esp8266/`](../esp8266/), which has no menuconfig: its
+channel and peer MAC live in `../esp8266/src/espkeyboard_config.h`.
+
+## Test typer
+
+**Send a test keystroke periodically** in the same menu sends the letter `a`
+every `CONFIG_ESPKEYBOARD_TEST_TYPER_INTERVAL_MS` milliseconds, so the radio
+link and the receiver's USB keyboard can be exercised without attaching a USB
+keyboard to this board.
+
+It pauses automatically while a real keyboard is connected, since a connected
+keyboard is the authority on what is pressed. Each cycle sends a press, holds
+it briefly, then always sends a release, so an interrupted link cannot leave
+the key held down on the receiving host.
+
+Turn it off for normal use: it injects keystrokes into whatever machine the
+receiver is plugged into.
 
 ## USB input support
 

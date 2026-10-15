@@ -10,5 +10,25 @@ config ESPNOW_PEER_MAC
     default "00:00:00:00:00:00"
     help
         Set this to the station MAC printed by the ESP8266 receiver.
+        ESP-NOW stays disabled while this is the all-zero default, so the
+        transmitter sends nothing until it is paired.
+
+config ESPKEYBOARD_TEST_TYPER
+    bool "Send a test keystroke periodically"
+    default n
+    help
+        Bring-up aid. Sends the letter "a" over ESP-NOW at a fixed interval so
+        the radio link and the receiver's USB keyboard can be tested without
+        attaching a USB keyboard to this board.
+
+        It stays quiet while a real keyboard is connected, so leaving it on
+        does not corrupt real typing. Even so, turn it off for normal use: it
+        injects keystrokes into whatever host the receiver is plugged into.
+
+config ESPKEYBOARD_TEST_TYPER_INTERVAL_MS
+    int "Test keystroke interval (ms)"
+    depends on ESPKEYBOARD_TEST_TYPER
+    range 200 60000
+    default 2000
 
 endmenu

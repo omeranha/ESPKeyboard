@@ -1,2 +1,12 @@
 CONFIG_ESPNOW_CHANNEL=1
-CONFIG_ESPNOW_PEER_MAC="00:00:00:00:00:00"
+
+# Station MAC of the paired ESP8266 receiver, which it prints at startup.
+# ESP-NOW stays disabled while this is the all-zero default, so the transmitter
+# would send nothing at all.
+CONFIG_ESPNOW_PEER_MAC="68:c6:3a:98:56:e1"
+
+# Bring-up aid: send "a" every two seconds so the link can be tested without a
+# USB keyboard attached here. It pauses automatically while a real keyboard is
+# connected. Turn this off for normal use.
+CONFIG_ESPKEYBOARD_TEST_TYPER=y
+CONFIG_ESPKEYBOARD_TEST_TYPER_INTERVAL_MS=2000

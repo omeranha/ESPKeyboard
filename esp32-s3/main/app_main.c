@@ -16,6 +16,7 @@
 #include "nvs_flash.h"
 #include "usb/hid.h"
 #include "usb/hid_host.h"
+#include "usb/hid_usage_keyboard.h"
 #include "usb/usb_host.h"
 
 #include "keyboard_link.h"
@@ -43,13 +44,11 @@ static void check_esp_err(esp_err_t error, const char *operation)
     }
 }
 
-static void send_callback(const esp_now_send_info_t *tx_info,
-        esp_now_send_status_t status)
+static void send_callback(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
     (void)tx_info;
     if (send_task_handle != NULL) {
-        xTaskNotify(send_task_handle, status == ESP_NOW_SEND_SUCCESS ? 1 : 2,
-                eSetValueWithOverwrite);
+        xTaskNotify(send_task_handle, status == ESP_NOW_SEND_SUCCESS ? 1 : 2, eSetValueWithOverwrite);
     }
 }
 
@@ -65,20 +64,23 @@ static bool send_packet(const uint8_t report[KEYBOARD_LINK_REPORT_SIZE])
         uint32_t result = 0;
         xTaskNotifyStateClear(NULL);
 
-        esp_err_t error = esp_now_send(paired_mac, (const uint8_t *)&packet,
-                sizeof(packet));
+        esp_err_t error = esp_now_send(paired_mac, (const uint8_t *)&packet, sizeof(packet));
         if (error != ESP_OK) {
-            ESP_LOGW(TAG, "ESP-NOW send attempt %u failed: %s",
-                    attempt, esp_err_to_name(error));
+            ESP_LOGW(TAG, "ESP-NOW send attempt %u failed: %s", attempt, esp_err_to_name(error));
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
 
-        if (xTaskNotifyWait(0, UINT32_MAX, &result,
-                    pdMS_TO_TICKS(TX_CALLBACK_TIMEOUT_MS)) == pdTRUE && result == 1) {
+        // Separate "the radio never finished" from "the receiver did not
+        // acknowledge": the first points at the timeout being too tight, the
+        // second at the RF link.
+        if (xTaskNotifyWait(0, UINT32_MAX, &result, pdMS_TO_TICKS(TX_CALLBACK_TIMEOUT_MS)) != pdTRUE) {
+            ESP_LOGW(TAG, "ESP-NOW send attempt %u gave no result within %d ms", attempt, TX_CALLBACK_TIMEOUT_MS);
+        } else if (result == 1) {
             return true;
+        } else {
+            ESP_LOGW(TAG, "ESP-NOW send attempt %u was not acknowledged by the receiver", attempt);
         }
-        ESP_LOGW(TAG, "ESP-NOW send attempt %u did not report success", attempt);
     }
 
     ESP_LOGE(TAG, "Could not send keyboard report; receiver will resync on next report");
@@ -93,13 +95,11 @@ static void report_sender_task(void *arg)
     (void)arg;
     send_task_handle = xTaskGetCurrentTaskHandle();
     for (;;) {
-        if (xQueueReceive(report_queue, queued_report,
-                    pdMS_TO_TICKS(REPORT_REFRESH_MS)) == pdTRUE) {
+        if (xQueueReceive(report_queue, queued_report, pdMS_TO_TICKS(REPORT_REFRESH_MS)) == pdTRUE) {
             memcpy(latest_report, queued_report, sizeof(latest_report));
             (void)send_packet(latest_report);
             last_send = xTaskGetTickCount();
-        } else if ((TickType_t)(xTaskGetTickCount() - last_send) >=
-                pdMS_TO_TICKS(REPORT_REFRESH_MS)) {
+        } else if ((TickType_t)(xTaskGetTickCount() - last_send) >= pdMS_TO_TICKS(REPORT_REFRESH_MS)) {
             (void)send_packet(latest_report);
             last_send = xTaskGetTickCount();
         }
@@ -113,8 +113,55 @@ static void enqueue_keyboard_report(const uint8_t report[KEYBOARD_LINK_REPORT_SI
     }
 }
 
-static void hid_interface_event_callback(hid_host_device_handle_t handle,
-        const hid_host_interface_event_t event, void *arg)
+#ifdef CONFIG_ESPKEYBOARD_TEST_TYPER
+// How long the test key is held down. Long enough that the press and the
+// release are two distinct snapshots on the link rather than one that the
+// receiver could coalesce away.
+#define TEST_TYPER_HOLD_MS 50
+
+static void test_typer_task(void *arg)
+{
+    uint8_t report[KEYBOARD_LINK_REPORT_SIZE];
+    bool was_idle = true;
+
+    (void)arg;
+    ESP_LOGW(TAG, "Test typer enabled: sending 'a' every %d ms while no keyboard is attached", CONFIG_ESPKEYBOARD_TEST_TYPER_INTERVAL_MS);
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_ESPKEYBOARD_TEST_TYPER_INTERVAL_MS));
+
+        // Stay out of the way of real input: a connected keyboard is the
+        // authority on what is pressed, and interleaving synthetic reports
+        // would fight it.
+        if (active_keyboard != NULL) {
+            if (was_idle) {
+                ESP_LOGI(TAG, "Test typer paused; a real keyboard is connected");
+                was_idle = false;
+            }
+            continue;
+        }
+        if (!was_idle) {
+            ESP_LOGI(TAG, "Test typer resumed; no keyboard connected");
+            was_idle = true;
+        }
+
+        // Boot-keyboard report layout: byte 0 is the modifier bitmap, byte 1
+        // is reserved, bytes 2..7 are up to six concurrently held usages.
+        memset(report, 0, sizeof(report));
+        report[2] = HID_KEY_A;
+        enqueue_keyboard_report(report);
+
+        vTaskDelay(pdMS_TO_TICKS(TEST_TYPER_HOLD_MS));
+
+        // Always release. Leaving the key down would have the receiver hold
+        // it on the host until its transmitter timeout fired.
+        memset(report, 0, sizeof(report));
+        enqueue_keyboard_report(report);
+    }
+}
+#endif
+
+static void hid_interface_event_callback(hid_host_device_handle_t handle, const hid_host_interface_event_t event, void *arg)
 {
     (void)arg;
     if (handle != active_keyboard) {
@@ -124,15 +171,13 @@ static void hid_interface_event_callback(hid_host_device_handle_t handle,
     if (event == HID_HOST_INTERFACE_EVENT_INPUT_REPORT) {
         uint8_t report[64];
         size_t report_length = 0;
-        esp_err_t error = hid_host_device_get_raw_input_report_data(handle,
-                report, sizeof(report), &report_length);
+        esp_err_t error = hid_host_device_get_raw_input_report_data(handle, report, sizeof(report), &report_length);
         if (error != ESP_OK) {
             ESP_LOGE(TAG, "Could not read keyboard report: %s", esp_err_to_name(error));
             return;
         }
         if (report_length < KEYBOARD_LINK_REPORT_SIZE) {
-            ESP_LOGW(TAG, "Ignoring short boot-keyboard report (%u bytes)",
-                    (unsigned)report_length);
+            ESP_LOGW(TAG, "Ignoring short boot-keyboard report (%u bytes)", (unsigned)report_length);
             return;
         }
         enqueue_keyboard_report(report);
@@ -147,8 +192,7 @@ static void hid_interface_event_callback(hid_host_device_handle_t handle,
     }
 }
 
-static void hid_driver_event_callback(hid_host_device_handle_t handle,
-        const hid_host_driver_event_t event, void *arg)
+static void hid_driver_event_callback(hid_host_device_handle_t handle, const hid_host_driver_event_t event, void *arg)
 {
     (void)arg;
     if (event != HID_HOST_DRIVER_EVENT_CONNECTED) {
@@ -161,8 +205,7 @@ static void hid_driver_event_callback(hid_host_device_handle_t handle,
         ESP_LOGE(TAG, "Could not query HID interface: %s", esp_err_to_name(error));
         return;
     }
-    if (params.sub_class != HID_SUBCLASS_BOOT_INTERFACE ||
-            params.proto != HID_PROTOCOL_KEYBOARD) {
+    if (params.sub_class != HID_SUBCLASS_BOOT_INTERFACE || params.proto != HID_PROTOCOL_KEYBOARD) {
         ESP_LOGI(TAG, "Ignoring HID interface; a boot-protocol keyboard is required");
         return;
     }
@@ -266,8 +309,7 @@ static void initialize_esp_now(void)
 static void initialize_nvs(void)
 {
     esp_err_t error = nvs_flash_init();
-    if (error == ESP_ERR_NVS_NO_FREE_PAGES ||
-            error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (error == ESP_ERR_NVS_NO_FREE_PAGES || error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         error = nvs_flash_init();
     }
@@ -298,6 +340,14 @@ void app_main(void)
         ESP_LOGE(TAG, "Could not create the ESP-NOW sender task");
         return;
     }
+
+#ifdef CONFIG_ESPKEYBOARD_TEST_TYPER
+    // Created before the USB host so the link can be exercised even if no
+    // keyboard is ever attached to this board.
+    if (xTaskCreate(test_typer_task, "test_typer", 2560, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Could not create the test typer task");
+    }
+#endif
 
     TaskHandle_t app_task = xTaskGetCurrentTaskHandle();
     if (xTaskCreate(usb_library_task, "usb_events", 4096, app_task, 2, NULL) != pdPASS) {
