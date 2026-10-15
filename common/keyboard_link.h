@@ -17,8 +17,7 @@ typedef struct {
 
 static inline uint16_t keyboard_link_get_sequence(const keyboard_link_packet_t *packet)
 {
-    return (uint16_t)packet->sequence_le[0] |
-            ((uint16_t)packet->sequence_le[1] << 8);
+    return (uint16_t)packet->sequence_le[0] | ((uint16_t)packet->sequence_le[1] << 8);
 }
 
 static inline void keyboard_link_set_sequence(keyboard_link_packet_t *packet,
