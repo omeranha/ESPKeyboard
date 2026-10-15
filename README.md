@@ -1,15 +1,16 @@
 # ESPKeyboard
 
-This repository contains the two firmware projects for a wireless USB keyboard
-bridge:
+ESPKeyboard bridges a USB keyboard to a computer over a low-latency ESP-NOW
+link using two boards:
 
-- [`ESPKeyboard/esp32-s3/`](ESPKeyboard/esp32-s3/) is the USB-host transmitter.
-- [`ESPKeyboard/esp8266/`](ESPKeyboard/esp8266/) is the USB-device receiver.
-- [`ESPKeyboard/common/`](ESPKeyboard/common/) defines the ESP-NOW report
-  protocol shared by both projects.
+- [`esp32-s3/`](esp32-s3/) reads a boot-protocol USB keyboard as a USB host and
+  transmits complete keyboard reports.
+- [`esp8266/`](esp8266/) receives the reports and presents them to the computer
+  as a low-speed USB HID keyboard.
+- [`common/keyboard_link.h`](common/keyboard_link.h) defines the shared
+  wireless packet format.
 
-Start with [`ESPKeyboard/README.md`](ESPKeyboard/README.md), then follow each
-board project's build and pairing instructions.
+Build and pairing instructions are in each board project's README.
 
 ## Changes from the original ESPUSB project
 
