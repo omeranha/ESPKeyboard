@@ -1,0 +1,86 @@
+menu "ESPKeyboard sender"
+
+config ESPKEYBOARD_TRANSPORT_ESPNOW
+	bool "Send over ESP-NOW"
+	default y
+	help
+		Sends every keyboard report to one paired ESP-NOW receiver
+		(receiver-esp8266 or receiver-esp32). Needs the receiver's station MAC
+		below. This transport and the Bluetooth one can run at the same time.
+
+config ESPNOW_CHANNEL
+	int "ESP-NOW channel"
+	depends on ESPKEYBOARD_TRANSPORT_ESPNOW
+	range 1 13
+	default 1
+	help
+		Must match the receiver. This firmware never joins an access point, so
+		the channel is pinned by hand.
+
+config ESPNOW_PEER_MAC
+	string "Paired receiver station MAC address"
+	depends on ESPKEYBOARD_TRANSPORT_ESPNOW
+	default "00:00:00:00:00:00"
+	help
+		Station MAC printed by the receiver at boot. ESP-NOW stays off while
+		this is the all-zero default. The Bluetooth transport is unaffected.
+
+choice ESPKEYBOARD_ESPNOW_RATE
+	prompt "ESP-NOW data rate"
+	depends on ESPKEYBOARD_TRANSPORT_ESPNOW
+	default ESPKEYBOARD_ESPNOW_RATE_1M
+	help
+		The ESP-NOW default is 1 Mbps with a long preamble, which is the most
+		robust and the slowest on the air: roughly 0.6 ms per report. 24 Mbps
+		OFDM cuts that to roughly 0.05 ms, with less range and less margin in a
+		noisy room. The receiver needs no setting.
+
+config ESPKEYBOARD_ESPNOW_RATE_1M
+	bool "1 Mbps (ESP-NOW default)"
+
+config ESPKEYBOARD_ESPNOW_RATE_24M
+	bool "24 Mbps (802.11g OFDM)"
+
+endchoice
+
+config ESPKEYBOARD_TRANSPORT_BLE
+	bool "Act as a Bluetooth LE HID keyboard"
+	depends on BT_NIMBLE_ENABLED && BT_NIMBLE_HID_SERVICE
+	default y
+	help
+		Advertises as a standard HID-over-GATT keyboard that a PC, phone or
+		tablet pairs with directly. No receiver board is needed.
+
+config ESPKEYBOARD_BLE_DEVICE_NAME
+	string "Bluetooth device name"
+	depends on ESPKEYBOARD_TRANSPORT_BLE
+	default "ESPKeyboard"
+
+config ESPKEYBOARD_BLE_PASSKEY
+	int "Bluetooth pairing passkey (0 = Just Works)"
+	depends on ESPKEYBOARD_TRANSPORT_BLE
+	range 0 999999
+	default 0
+	help
+		0 pairs without a code, so anyone in range can pair while the keyboard
+		is advertising. A value from 1 to 999999 makes the host ask for that
+		six-digit code before it can pair.
+
+config ESPKEYBOARD_TEST_TYPER
+	bool "Send a test keystroke periodically"
+	default n
+	help
+		Bring-up aid. Sends the letter "a" at a fixed interval so the links and
+		the receiver's USB keyboard can be tested without a USB keyboard
+		attached to this board.
+
+		It stays quiet while a real keyboard is connected. Turn it off for
+		normal use: it types into whatever host the receiver is plugged into.
+
+config ESPKEYBOARD_TEST_TYPER_INTERVAL_MS
+	int "Test keystroke interval (ms)"
+	depends on ESPKEYBOARD_TEST_TYPER
+	range 200 60000
+	default 2000
+
+endmenu

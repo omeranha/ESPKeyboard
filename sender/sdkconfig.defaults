@@ -1,0 +1,9 @@
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Pairing, the passkey and the test typer are deliberately left unset here.
+# Set them in menuconfig, which writes the untracked sdkconfig, so one board's
+# MAC does not end up in version control and a fresh clone never types into
+# whatever host the receiver is plugged into.
