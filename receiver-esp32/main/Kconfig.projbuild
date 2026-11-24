@@ -1,0 +1,27 @@
+menu "ESPKeyboard receiver"
+
+config ESPNOW_CHANNEL
+	int "ESP-NOW channel"
+	range 1 13
+	default 1
+	help
+		Must match the sender. This firmware never joins an access point, so
+		the channel is pinned by hand.
+
+config ESPNOW_PEER_MAC
+	string "Paired sender station MAC address"
+	default "00:00:00:00:00:00"
+	help
+		Station MAC the sender prints at boot. Frames from any other address
+		are ignored. ESP-NOW stays off while this is the all-zero default.
+
+config ESPKEYBOARD_SENDER_TIMEOUT_MS
+	int "Release all keys after the sender is silent for (ms)"
+	range 300 10000
+	default 1500
+	help
+		The sender refreshes the current report every 100 ms even when nothing
+		changes. Without this timeout, losing the sender while a key is down
+		would leave that key held on the host.
+
+endmenu
