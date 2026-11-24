@@ -1,2 +1,10 @@
-.pio
-/.vscode
+*.elf
+*.bin
+*tmp*
+build*/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+.vscode/
+.peer-mac
